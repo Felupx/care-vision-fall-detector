@@ -29,8 +29,8 @@ def main():
 
         if len(pontos) >= 1 and bbox:
             x, y, w, h = bbox["bbox"]
-            cabeca = pontos[0][1]
-            joelho = pontos[26][1]
+            cabeca = pontos[0][2]
+            joelho = pontos[26][2]
             diferenca = joelho - cabeca
 
             if diferenca <= 0:
