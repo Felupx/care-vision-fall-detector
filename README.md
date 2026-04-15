@@ -15,10 +15,32 @@ Quedas são uma das principais causas de acidentes graves entre a população id
 1. Clone o repositório.
 2. Crie um ambiente virtual (recomendado): `python -m venv venv` e ative-o.
 3. Instale as dependências: `pip install -r requirements.txt`
-4. Coloque um vídeo de teste na pasta `data/` ou altere o código para usar sua webcam.
-5. Execute o script principal: `python src/main.py`
+4. Coloque um vídeo de teste na pasta `data/`.
+5. Execute com um dos comandos abaixo:
+
+```bash
+python src/main.py
+python src/main.py --video vd02.mp4
+python src/main.py --camera 0
+```
+
+## 🧠 Como a detecção funciona nesta versão
+
+Esta primeira versão foi pensada para a etapa de analise de videos. O algoritmo combina:
+
+- pose corporal identificada com MediaPipe/CVZone;
+- proporcao do corpo para saber se a pessoa ficou mais "horizontal";
+- deslocamento vertical rapido do quadril;
+- permanencia da pessoa proxima ao chao por alguns frames.
+
+Na tela, o sistema mostra:
+
+- `POSTURA ESTAVEL` quando nao ha indicio de queda;
+- `RISCO DE QUEDA` quando detecta um movimento suspeito;
+- `QUEDA CONFIRMADA` quando o evento persiste e se parece com uma queda real.
 
 ## 🚧 Próximos Passos (Backlog)
-- [ ] Refinar algoritmo para reduzir falsos positivos (implementar análise de tempo de permanência e velocidade da queda).
+- [ ] Refinar algoritmo para reduzir falsos positivos com testes em mais videos e diferentes angulos.
 - [ ] Integrar sistema de notificação externa (ex: envio de mensagem automática).
 - [ ] Lidar com cenários de oclusão (quando móveis tampam parte do corpo).
+- [ ] Adaptar a mesma lógica para monitoramento continuo com webcam.
