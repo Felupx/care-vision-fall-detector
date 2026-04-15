@@ -1,3 +1,3 @@
 opencv-python==4.8.1.78
-mediapipe>=0.10.30
+mediapipe==0.10.11
 cvzone==1.6.1

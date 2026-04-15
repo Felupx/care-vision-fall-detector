@@ -1,53 +1,105 @@
+from pathlib import Path
+
 import cv2
 from cvzone.PoseModule import PoseDetector
 
+
+VIDEO_FILE = "vd01.mp4"
+FRAME_SIZE = (1280, 720)
+FALL_CONFIRMATION_FRAMES = 8
+TORSO_RATIO_THRESHOLD = 0.60
+
+
+def get_video_source():
+    base_dir = Path(__file__).resolve().parent.parent
+    return str(base_dir / "data" / VIDEO_FILE)
+
+
+def is_fall_detected(landmarks, bbox_info):
+    if not bbox_info:
+        return False
+
+    # Cada landmark vem no formato [id, x, y, z, visibility].
+    head_y = landmarks[0][2]
+    left_hip_y = landmarks[23][2]
+    right_hip_y = landmarks[24][2]
+    left_knee_y = landmarks[25][2]
+    right_knee_y = landmarks[26][2]
+
+    hip_y = (left_hip_y + right_hip_y) / 2
+    knee_y = (left_knee_y + right_knee_y) / 2
+
+    x, y, w, h = bbox_info["bbox"]
+    width_height_ratio = w / max(h, 1)
+
+    torso_height = abs(hip_y - head_y)
+    lower_body_height = max(abs(knee_y - hip_y), 1)
+    torso_ratio = torso_height / lower_body_height
+
+    return width_height_ratio > 1.1 or torso_ratio < TORSO_RATIO_THRESHOLD
+
+
+def draw_status(img, bbox_info, fall_frames):
+    if not bbox_info:
+        return
+
+    x, y, w, h = bbox_info["bbox"]
+    is_confirmed_fall = fall_frames >= FALL_CONFIRMATION_FRAMES
+    color = (0, 0, 255) if is_confirmed_fall else (0, 255, 255)
+    label = "QUEDA DETECTADA" if is_confirmed_fall else "Monitorando risco"
+
+    cv2.rectangle(img, (x, y), (x + w, y + h), color, 3)
+    cv2.putText(
+        img,
+        label,
+        (x, max(y - 20, 30)),
+        cv2.FONT_HERSHEY_PLAIN,
+        2.5,
+        color,
+        3,
+    )
+
+
 def main():
-    # 1. Configuração Inicial
-    # Troque pelo caminho do seu vídeo ou coloque 0 para usar a webcam
-    video_path = "../data/vd01.mp4" 
-    cap = cv2.VideoCapture(video_path)
-    
-    # Inicializa o detector do MediaPipe via cvzone
+    # Troque para 0 se quiser usar a webcam.
+    video_source = get_video_source()
+    cap = cv2.VideoCapture(video_source)
+
+    if not cap.isOpened():
+        raise FileNotFoundError(f"Nao foi possivel abrir a fonte de video: {video_source}")
+
     detector = PoseDetector()
+    fall_frames = 0
 
     while True:
-        sucesso, img = cap.read()
-        if not sucesso:
-            break # Fim do vídeo
+        success, img = cap.read()
+        if not success:
+            break
 
-        # Redimensiona para padronizar a análise e deixar o processamento mais leve
-        img = cv2.resize(img, (1280, 720))
+        img = cv2.resize(img, FRAME_SIZE)
 
-        # 2. Detecção de Pose
         img = detector.findPose(img)
-        lmList, bboxInfo = detector.findPosition(img, draw=False)
+        landmarks, bbox_info = detector.findPosition(img, draw=False)
 
-        # 3. Lógica de Identificação de Queda (Base inicial)
-        if lmList:
-            # Pegando as coordenadas Y (índice 1) da cabeça (ponto 0) e joelho (ponto 26)
-            y_cabeca = lmList[0][1]
-            y_joelho = lmList[26][1]
-            
-            # Cálculo básico: cabeça abaixo ou na mesma linha do joelho
-            diferenca = y_joelho - y_cabeca
-            
-            if diferenca <= 0:
-                # Dispara o alerta visual na tela
-                if bboxInfo:
-                    x, y, w, h = bboxInfo["bbox"]
-                    cv2.rectangle(img, (x, y), (x + w, y + h), (0, 0, 255), 3)
-                    cv2.putText(img, "QUEDA DETECTADA", (x, y - 30), 
-                                cv2.FONT_HERSHEY_PLAIN, 3, (0, 0, 255), 3)
+        if landmarks and len(landmarks) > 26:
+            if is_fall_detected(landmarks, bbox_info):
+                fall_frames += 1
+            else:
+                fall_frames = 0
 
-        # Exibe a imagem
+            if fall_frames > 0:
+                draw_status(img, bbox_info, fall_frames)
+        else:
+            fall_frames = 0
+
         cv2.imshow("Monitoramento de Quedas - UPX", img)
-        
-        # Pressione 'q' para sair
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+
+        if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
     cap.release()
     cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
     main()
