@@ -4,24 +4,27 @@ import cv2
 import cvzone
 from cvzone.PoseModule import PoseDetector
 import firebase_admin
-from firebase_admin import credentials, db
+from firebase_admin import credentials, firestore
 
-# Configuração Firebase
+# config firestore
 FIREBASE_KEY = "database.json" 
-URL_DATABASE = "https://care-vision-dc352-default-rtdb.firebaseio.com/"
 
 cred = credentials.Certificate(FIREBASE_KEY)
-firebase_admin.initialize_app(cred, {'databaseURL': URL_DATABASE})
-status_ref = db.reference('status_queda')
+firebase_admin.initialize_app(cred)
+db = firestore.client()
+
+doc_ref = db.collection("monitoramento_camera").document("estado_atual")
 
 FRAME_SIZE = (1280, 720)
 
 def main():
-    video = cv2.VideoCapture(0)  # Abre a webcam do notebook
+    video = cv2.VideoCapture(0)  # abre webcam notebook
     detector = PoseDetector()
     
     ultimo_status = None 
     tempo_simulacao = 0
+
+    print("\n--- CONECTADO AO FIRESTORE (FLUTTERFLOW) ---")
 
     while True:
         check, img = video.read()
@@ -34,12 +37,12 @@ def main():
 
         status_atual = 0  # 0 = Estável
 
-        # Se a tecla F for pressionada, força o status de queda por 3 segundos
+        # Tecla F para simular queda (debug)
         if time.time() < tempo_simulacao:
             status_atual = 1
             cvzone.putTextRect(img, "TESTE: SIMULANDO QUEDA", (50, 100), scale=3, colorR=(0, 0, 255))
         
-        # Senão, segue a lógica da inteligência artificial
+        # IA calcula queda com base na diferença entre a cabeça e o joelho
         elif len(pontos) >= 1 and bbox:
             x, y, w, h = bbox["bbox"]
             cabeca = pontos[0][2]
@@ -47,26 +50,26 @@ def main():
             diferenca = joelho - cabeca
 
             if diferenca <= 0:
-                status_atual = 1  # 1 = Queda
+                status_atual = 1  # 1 = queda
                 cvzone.putTextRect(img, "QUEDA DETECTADA", (x, y - 80), scale=3, colorR=(0, 0, 255))
             else:
                 cvzone.putTextRect(img, "POSTURA ESTAVEL", (x, y - 80), scale=3, colorR=(0, 180, 0))
 
-        # Envia para o Firebase apenas se o status mudar
+        # se o status atual for diferente do ultimo, ele envia pro firestore
         if status_atual != ultimo_status:
             try:
-                status_ref.set({"status": status_atual}) 
-                print(f"Firebase atualizado: {status_atual}")
+                doc_ref.set({"status_queda": status_atual}) 
+                print(f"Firestore atualizado: {status_atual}")
                 ultimo_status = status_atual
             except Exception as e:
-                print(f"Erro Firebase: {e}")
+                print(f"Erro Firestore: {e}")
 
         cv2.imshow("IMG", img)
 
         tecla = cv2.waitKey(1) & 0xFF
-        if tecla in (ord("q"), 27):  # Q ou ESC para sair
+        if tecla in (ord("q"), 27):
             break
-        elif tecla == ord("f"):  # F para testar queda
+        elif tecla == ord("f"):
             tempo_simulacao = time.time() + 3
 
     video.release()
