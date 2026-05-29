@@ -5,3 +5,6 @@ venv/
 env/
 
 data/*.mp4
+
+src/database.json
+database.json
