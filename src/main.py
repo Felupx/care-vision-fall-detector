@@ -1,31 +1,145 @@
+import argparse
 import time
 from pathlib import Path
 import cv2
 import cvzone
 from cvzone.PoseModule import PoseDetector
-import firebase_admin
-from firebase_admin import credentials, firestore
 
-# config firestore
 BASE_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = BASE_DIR.parent
+DATA_DIR = PROJECT_DIR / "data"
 FIREBASE_KEY = str(BASE_DIR / "database.json")
 
-cred = credentials.Certificate(FIREBASE_KEY)
-firebase_admin.initialize_app(cred)
-db = firestore.client()
-
-doc_ref = db.collection("monitoramento_camera").document("estado_atual")
-
 FRAME_SIZE = (1280, 720)
+FALL_CONFIRMATION_FRAMES = 8
+RECOVERY_CONFIRMATION_FRAMES = 12
+HEAD_KNEE_MARGIN_RATIO = 0.25
+BODY_HORIZONTAL_RATIO = 1.15
+LOW_BODY_RATIO = 0.55
+GROUND_CONTACT_RATIO = 0.78
+FAST_HIP_DROP_RATIO = 0.08
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Detector de quedas Care Vision")
+    parser.add_argument(
+        "--video",
+        help="Nome do video dentro da pasta data/ ou caminho completo para o arquivo.",
+    )
+    parser.add_argument(
+        "--camera",
+        type=int,
+        default=0,
+        help="Indice da camera usada quando --video nao for informado.",
+    )
+    return parser.parse_args()
+
+
+def conectar_firestore():
+    try:
+        import firebase_admin
+        from firebase_admin import credentials, firestore
+
+        cred = credentials.Certificate(FIREBASE_KEY)
+        try:
+            firebase_admin.get_app()
+        except ValueError:
+            firebase_admin.initialize_app(cred)
+
+        db = firestore.client()
+        print("\n--- CONECTADO AO FIRESTORE (FLUTTERFLOW) ---")
+        return db.collection("monitoramento_camera").document("estado_atual")
+    except Exception as e:
+        print(f"\nFirestore indisponivel, rodando apenas localmente: {e}")
+        return None
+
+
+def criar_fonte_video(args):
+    if not args.video:
+        return args.camera
+
+    caminho_video = Path(args.video)
+    if caminho_video.is_absolute():
+        return str(caminho_video)
+
+    if caminho_video.exists():
+        return str(caminho_video)
+
+    caminho_projeto = PROJECT_DIR / caminho_video
+    if caminho_projeto.exists():
+        return str(caminho_projeto)
+
+    return str(DATA_DIR / caminho_video)
+
+
+def analisar_pose(pontos, bbox, altura_frame, quadril_anterior=None):
+    if len(pontos) <= 28 or not bbox:
+        return False, (50, 100), None
+
+    x, y, w, h = bbox["bbox"]
+    if h <= 0:
+        return False, (50, 100), None
+
+    cabeca_y = pontos[0][1]
+    joelho_y = (pontos[25][1] + pontos[26][1]) / 2
+    quadril_y = (pontos[23][1] + pontos[24][1]) / 2
+
+    diferenca_cabeca_joelho = joelho_y - cabeca_y
+    margem_cabeca_joelho = h * HEAD_KNEE_MARGIN_RATIO
+    proporcao_corpo = w / h
+    base_corpo = y + h
+
+    cabeca_perto_joelho = diferenca_cabeca_joelho <= margem_cabeca_joelho
+    corpo_horizontal = proporcao_corpo >= BODY_HORIZONTAL_RATIO
+    quadril_baixo = quadril_y >= altura_frame * LOW_BODY_RATIO
+    corpo_proximo_chao = base_corpo >= altura_frame * GROUND_CONTACT_RATIO
+    queda_rapida = (
+        quadril_anterior is not None
+        and quadril_y - quadril_anterior >= altura_frame * FAST_HIP_DROP_RATIO
+    )
+
+    postura_de_queda = corpo_horizontal or cabeca_perto_joelho
+    corpo_baixo = quadril_baixo or corpo_proximo_chao
+    suspeita = (postura_de_queda and corpo_baixo) or (
+        queda_rapida and (postura_de_queda or corpo_baixo)
+    )
+
+    return suspeita, (x, max(50, y - 80)), quadril_y
+
+
+def atualizar_firestore(doc_ref, status_atual, ultimo_status):
+    if doc_ref is None or status_atual == ultimo_status:
+        return ultimo_status
+
+    try:
+        doc_ref.set({"status_queda": status_atual}, merge=True)
+        print(f"Firestore atualizado: {status_atual}")
+        return status_atual
+    except Exception as e:
+        print(f"Erro Firestore: {e}")
+        return ultimo_status
+
 
 def main():
-    video = cv2.VideoCapture(0)  # abre webcam notebook
+    args = parse_args()
+    fonte_video = criar_fonte_video(args)
+    video = cv2.VideoCapture(fonte_video)
+    if not video.isOpened():
+        print(f"Erro: nao foi possivel abrir a fonte de video: {fonte_video}")
+        return
+
     detector = PoseDetector()
-    
-    ultimo_status = None 
+    doc_ref = conectar_firestore()
+
+    ultimo_status_enviado = None
+    status_confirmado = 0
+    frames_suspeitos = 0
+    frames_estaveis = 0
+    quadril_anterior = None
     tempo_simulacao = 0
 
-    print("\n--- CONECTADO AO FIRESTORE (FLUTTERFLOW) ---")
+    fps = video.get(cv2.CAP_PROP_FPS)
+    delay = max(1, int(1000 / fps)) if fps and fps > 1 else 1
 
     while True:
         check, img = video.read()
@@ -36,38 +150,58 @@ def main():
         img = detector.findPose(img)
         pontos, bbox = detector.findPosition(img, draw=False)
 
-        status_atual = 0  # 0 = Estável
+        suspeita_queda, posicao_texto, quadril_atual = analisar_pose(
+            pontos,
+            bbox,
+            FRAME_SIZE[1],
+            quadril_anterior,
+        )
+        quadril_anterior = quadril_atual
 
-        # Tecla F para simular queda (debug)
-        if time.time() < tempo_simulacao:
-            status_atual = 1
-            cvzone.putTextRect(img, "TESTE: SIMULANDO QUEDA", (50, 100), scale=3, colorR=(0, 0, 255))
-        
-        # IA calcula queda com base na diferença entre a cabeça e o joelho
-        elif len(pontos) >= 1 and bbox:
-            x, y, w, h = bbox["bbox"]
-            cabeca = pontos[0][1]
-            joelho = pontos[26][1]
-            diferenca = joelho - cabeca
+        simulando_queda = time.time() < tempo_simulacao
+        if simulando_queda:
+            suspeita_queda = True
+            posicao_texto = (50, 100)
 
-            if diferenca <= 0:
-                status_atual = 1  # 1 = queda
-                cvzone.putTextRect(img, "QUEDA DETECTADA", (x, y - 80), scale=3, colorR=(0, 0, 255))
-            else:
-                cvzone.putTextRect(img, "POSTURA ESTAVEL", (x, y - 80), scale=3, colorR=(0, 180, 0))
+        if suspeita_queda:
+            frames_suspeitos += 1
+            frames_estaveis = 0
+        else:
+            frames_suspeitos = 0
+            frames_estaveis += 1
 
-        # se o status atual for diferente do ultimo, ele envia pro firestore
-        if status_atual != ultimo_status:
-            try:
-                doc_ref.set({"status_queda": status_atual}) 
-                print(f"Firestore atualizado: {status_atual}")
-                ultimo_status = status_atual
-            except Exception as e:
-                print(f"Erro Firestore: {e}")
+        if frames_suspeitos >= FALL_CONFIRMATION_FRAMES:
+            status_confirmado = 1
+        elif status_confirmado == 1 and frames_estaveis >= RECOVERY_CONFIRMATION_FRAMES:
+            status_confirmado = 0
+
+        if simulando_queda:
+            texto = "TESTE: SIMULANDO QUEDA"
+            cor = (0, 0, 255)
+        elif status_confirmado == 1:
+            texto = "QUEDA CONFIRMADA"
+            cor = (0, 0, 255)
+        elif frames_suspeitos > 0:
+            texto = f"RISCO DE QUEDA {frames_suspeitos}/{FALL_CONFIRMATION_FRAMES}"
+            cor = (0, 170, 255)
+        elif len(pontos) <= 28 or not bbox:
+            texto = "SEM POSE DETECTADA"
+            cor = (90, 90, 90)
+        else:
+            texto = "POSTURA ESTAVEL"
+            cor = (0, 180, 0)
+
+        cvzone.putTextRect(img, texto, posicao_texto, scale=3, colorR=cor)
+
+        ultimo_status_enviado = atualizar_firestore(
+            doc_ref,
+            status_confirmado,
+            ultimo_status_enviado,
+        )
 
         cv2.imshow("IMG", img)
 
-        tecla = cv2.waitKey(1) & 0xFF
+        tecla = cv2.waitKey(delay) & 0xFF
         if tecla in (ord("q"), 27):
             break
         elif tecla == ord("f"):
@@ -75,6 +209,7 @@ def main():
 
     video.release()
     cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
     main()
