@@ -1,4 +1,4 @@
 opencv-python==4.8.1.78
-mediapipe
+mediapipe==0.10.11
 cvzone==1.6.1
 firebase-admin

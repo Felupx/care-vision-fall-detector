@@ -7,7 +7,8 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 
 # config firestore
-FIREBASE_KEY = "database.json" 
+BASE_DIR = Path(__file__).resolve().parent
+FIREBASE_KEY = str(BASE_DIR / "database.json")
 
 cred = credentials.Certificate(FIREBASE_KEY)
 firebase_admin.initialize_app(cred)
@@ -45,8 +46,8 @@ def main():
         # IA calcula queda com base na diferença entre a cabeça e o joelho
         elif len(pontos) >= 1 and bbox:
             x, y, w, h = bbox["bbox"]
-            cabeca = pontos[0][2]
-            joelho = pontos[26][2]
+            cabeca = pontos[0][1]
+            joelho = pontos[26][1]
             diferenca = joelho - cabeca
 
             if diferenca <= 0:
