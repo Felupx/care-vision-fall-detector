@@ -1,4 +1,5 @@
 import argparse
+import math
 import time
 from pathlib import Path
 import cv2
@@ -13,11 +14,13 @@ FIREBASE_KEY = str(BASE_DIR / "database.json")
 FRAME_SIZE = (1280, 720)
 FALL_CONFIRMATION_FRAMES = 8
 RECOVERY_CONFIRMATION_FRAMES = 12
-HEAD_KNEE_MARGIN_RATIO = 0.25
+HEAD_KNEE_LINE_MARGIN_RATIO = 0.25
 BODY_HORIZONTAL_RATIO = 1.15
 LOW_BODY_RATIO = 0.55
 GROUND_CONTACT_RATIO = 0.78
 FAST_HIP_DROP_RATIO = 0.08
+SPINE_HORIZONTAL_ANGLE = 60
+SPINE_INCLINED_ANGLE = 35
 
 
 def parse_args():
@@ -72,25 +75,85 @@ def criar_fonte_video(args):
     return str(DATA_DIR / caminho_video)
 
 
+def ponto_medio(pontos, indice_a, indice_b):
+    return (
+        (pontos[indice_a][0] + pontos[indice_b][0]) / 2,
+        (pontos[indice_a][1] + pontos[indice_b][1]) / 2,
+    )
+
+
+def calcular_coluna(pontos):
+    ombro_centro = ponto_medio(pontos, 11, 12)
+    quadril_centro = ponto_medio(pontos, 23, 24)
+
+    dx = quadril_centro[0] - ombro_centro[0]
+    dy = quadril_centro[1] - ombro_centro[1]
+    if dx == 0 and dy == 0:
+        return None
+
+    angulo_vertical = math.degrees(math.atan2(abs(dx), abs(dy)))
+    return {
+        "ombro": ombro_centro,
+        "quadril": quadril_centro,
+        "angulo_vertical": angulo_vertical,
+    }
+
+
+def desenhar_coluna(img, coluna, suspeita_queda):
+    if not coluna:
+        return
+
+    angulo = coluna["angulo_vertical"]
+    if suspeita_queda or angulo >= SPINE_HORIZONTAL_ANGLE:
+        cor = (0, 0, 255)
+    elif angulo >= SPINE_INCLINED_ANGLE:
+        cor = (0, 170, 255)
+    else:
+        cor = (0, 180, 0)
+
+    ombro = tuple(map(int, coluna["ombro"]))
+    quadril = tuple(map(int, coluna["quadril"]))
+    texto_pos = (ombro[0], max(35, ombro[1] - 25))
+
+    cv2.line(img, ombro, quadril, cor, 4)
+    cv2.circle(img, ombro, 6, cor, cv2.FILLED)
+    cv2.circle(img, quadril, 6, cor, cv2.FILLED)
+    cvzone.putTextRect(
+        img,
+        f"COLUNA {angulo:.0f} deg",
+        texto_pos,
+        scale=1.4,
+        thickness=2,
+        colorR=cor,
+    )
+
+
 def analisar_pose(pontos, bbox, altura_frame, quadril_anterior=None):
     if len(pontos) <= 28 or not bbox:
-        return False, (50, 100), None
+        return False, (50, 100), None, None
 
     x, y, w, h = bbox["bbox"]
     if h <= 0:
-        return False, (50, 100), None
+        return False, (50, 100), None, None
 
     cabeca_y = pontos[0][1]
     joelho_y = (pontos[25][1] + pontos[26][1]) / 2
     quadril_y = (pontos[23][1] + pontos[24][1]) / 2
+    coluna = calcular_coluna(pontos)
 
-    diferenca_cabeca_joelho = joelho_y - cabeca_y
-    margem_cabeca_joelho = h * HEAD_KNEE_MARGIN_RATIO
+    distancia_vertical_cabeca_ate_joelho = joelho_y - cabeca_y
+    margem_linha_joelho = h * HEAD_KNEE_LINE_MARGIN_RATIO
     proporcao_corpo = w / h
     base_corpo = y + h
 
-    cabeca_perto_joelho = diferenca_cabeca_joelho <= margem_cabeca_joelho
+    cabeca_na_altura_do_joelho_ou_abaixo = (
+        distancia_vertical_cabeca_ate_joelho <= margem_linha_joelho
+    )
     corpo_horizontal = proporcao_corpo >= BODY_HORIZONTAL_RATIO
+    coluna_horizontal = (
+        coluna is not None
+        and coluna["angulo_vertical"] >= SPINE_HORIZONTAL_ANGLE
+    )
     quadril_baixo = quadril_y >= altura_frame * LOW_BODY_RATIO
     corpo_proximo_chao = base_corpo >= altura_frame * GROUND_CONTACT_RATIO
     queda_rapida = (
@@ -98,13 +161,17 @@ def analisar_pose(pontos, bbox, altura_frame, quadril_anterior=None):
         and quadril_y - quadril_anterior >= altura_frame * FAST_HIP_DROP_RATIO
     )
 
-    postura_de_queda = corpo_horizontal or cabeca_perto_joelho
+    postura_de_queda = (
+        coluna_horizontal
+        or corpo_horizontal
+        or cabeca_na_altura_do_joelho_ou_abaixo
+    )
     corpo_baixo = quadril_baixo or corpo_proximo_chao
     suspeita = (postura_de_queda and corpo_baixo) or (
         queda_rapida and (postura_de_queda or corpo_baixo)
     )
 
-    return suspeita, (x, max(50, y - 80)), quadril_y
+    return suspeita, (x, max(50, y - 80)), quadril_y, coluna
 
 
 def atualizar_firestore(doc_ref, status_atual, ultimo_status):
@@ -150,7 +217,7 @@ def main():
         img = detector.findPose(img)
         pontos, bbox = detector.findPosition(img, draw=False)
 
-        suspeita_queda, posicao_texto, quadril_atual = analisar_pose(
+        suspeita_queda, posicao_texto, quadril_atual, coluna = analisar_pose(
             pontos,
             bbox,
             FRAME_SIZE[1],
@@ -162,6 +229,8 @@ def main():
         if simulando_queda:
             suspeita_queda = True
             posicao_texto = (50, 100)
+
+        desenhar_coluna(img, coluna, suspeita_queda)
 
         if suspeita_queda:
             frames_suspeitos += 1

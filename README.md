@@ -29,9 +29,16 @@ python src/main.py --camera 0
 Esta primeira versão foi pensada para a etapa de analise de videos. O algoritmo combina:
 
 - pose corporal identificada com MediaPipe/CVZone;
+- angulo da linha entre o centro dos ombros e o centro do quadril, simulando a "coluna";
 - proporcao do corpo para saber se a pessoa ficou mais "horizontal";
 - deslocamento vertical rapido do quadril;
 - permanencia da pessoa proxima ao chao por alguns frames.
+
+Na visualizacao, essa linha da coluna e desenhada sobre a pessoa:
+
+- verde quando a pessoa esta mais vertical;
+- laranja quando a postura esta inclinada;
+- vermelha quando a coluna fica mais horizontal, indicando possivel queda.
 
 Na tela, o sistema mostra:
 
