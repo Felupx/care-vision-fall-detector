@@ -175,16 +175,33 @@ def analisar_pose(pontos, bbox, altura_frame, quadril_anterior=None):
 
 
 def atualizar_firestore(doc_ref, status_atual, ultimo_status):
-    if doc_ref is None or status_atual == ultimo_status:
+    if doc_ref is None:
         return ultimo_status
 
-    try:
-        doc_ref.set({"status_queda": status_atual}, merge=True)
-        print(f"Firestore atualizado: {status_atual}")
-        return status_atual
-    except Exception as e:
-        print(f"Erro Firestore: {e}")
-        return ultimo_status
+    if status_atual != ultimo_status:
+        try:
+            dados = {
+                "status_queda": status_atual,
+                "ultima_atualizacao": time.time()  # Timestamp para o app saber quando mudou
+            }
+            doc_ref.set(dados, merge=True)
+            print(f"Firestore atualizado (Mudança de Estado): {status_atual}")
+            return status_atual
+        except Exception as e:
+            print(f"Erro Firestore: {e}")
+            return ultimo_status
+            
+    elif status_atual == 1:
+        agora = time.time()
+        if not hasattr(atualizar_firestore, "ultimo_pulso") or (agora - atualizar_firestore.ultimo_pulso > 5):
+            atualizar_firestore.ultimo_pulso = agora
+            try:
+                doc_ref.set({"alerta_continuo_timestamp": agora}, merge=True)
+                print("Firestore atualizado: Alerta contínuo de queda pendente.")
+            except Exception as e:
+                print(f"Erro no pulso do Firestore: {e}")
+
+    return ultimo_status
 
 
 def main():
